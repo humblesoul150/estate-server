@@ -28,13 +28,79 @@ const deleteCloudinaryImage = async (publicId) => {
   }
 
   try {
-    await cloudinary.uploader.destroy(publicId, {
+    const result = await cloudinary.uploader.destroy(publicId, {
       resource_type: "image",
     });
+    if (result?.result !== "ok" && result?.result !== "not found") {
+      console.error("Cloudinary avatar cleanup returned an unexpected result:", result);
+    }
   } catch (error) {
     console.error("Cloudinary avatar cleanup error:", error.message);
   }
 };
+
+const toggleSavedPropertyIds = (savedPropertyIds = [], propertyId) => {
+  const normalized = (savedPropertyIds || []).map((id) => String(id));
+  const targetId = String(propertyId);
+
+  if (normalized.includes(targetId)) {
+    return normalized.filter((id) => id !== targetId);
+  }
+
+  return [...normalized, targetId];
+};
+
+const normalizeSearchHistoryEntry = (entry = {}) => {
+  const query = String(entry.query ?? "").trim().replace(/\s+/g, " ");
+  if (!query) {
+    return null;
+  }
+
+  const purpose = typeof entry.purpose === "string" ? entry.purpose.trim() : "";
+  const category = typeof entry.category === "string" ? entry.category.trim() : "";
+  const now = new Date();
+
+  return {
+    id: new mongoose.Types.ObjectId().toString(),
+    query,
+    purpose: purpose || undefined,
+    category: category || undefined,
+    createdAt: now.toISOString(),
+    expiresAt: new Date(
+      now.getTime() + 3 * 24 * 60 * 60 * 1000,
+    ).toISOString(),
+  };
+};
+
+const pruneExpiredSearchHistory = (entries = [], now = Date.now()) => {
+  return (entries || []).filter((entry) => {
+    if (!entry) {
+      return false;
+    }
+
+    const expiresAt = entry.expiresAt
+      ? new Date(entry.expiresAt).getTime()
+      : new Date(entry.createdAt ?? now).getTime() + 3 * 24 * 60 * 60 * 1000;
+
+    return expiresAt > now;
+  });
+};
+
+const limitSearchHistory = (entries = [], maxEntries = 5) => {
+  return [...(entries || [])]
+    .filter(Boolean)
+    .sort(
+      (first, second) =>
+        new Date(second.createdAt ?? 0).getTime() -
+        new Date(first.createdAt ?? 0).getTime(),
+    )
+    .slice(0, maxEntries);
+};
+
+exports.toggleSavedPropertyIds = toggleSavedPropertyIds;
+exports.normalizeSearchHistoryEntry = normalizeSearchHistoryEntry;
+exports.pruneExpiredSearchHistory = pruneExpiredSearchHistory;
+exports.limitSearchHistory = limitSearchHistory;
 
 const toSafeUser = (user) => {
   const result = user.toObject();
@@ -83,6 +149,30 @@ exports.updateAvatar = async (req, res) => {
   } catch (error) {
     console.error("Avatar upload error:", error.message);
     return res.status(500).json({ message: "Unable to upload avatar" });
+  }
+};
+
+exports.removeAvatar = async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const previousPublicId = user.avatar?.publicId;
+    user.avatar = { url: null, publicId: null };
+    await user.save();
+
+    await deleteCloudinaryImage(previousPublicId);
+
+    return res.status(200).json({
+      success: true,
+      message: "Profile photo removed",
+      user: user.toObject(),
+    });
+  } catch (error) {
+    console.error("Avatar removal error:", error.message);
+    return res.status(500).json({ message: "Unable to remove profile photo" });
   }
 };
 
@@ -239,6 +329,143 @@ exports.updateProfile = async (req, res) => {
   }
 };
 
+exports.getSavedProperties = async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.userId).populate("saved");
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const savedPropertyIds = user.saved.map((property) => String(property._id));
+    return res.status(200).json({
+      success: true,
+      savedPropertyIds,
+      savedCount: savedPropertyIds.length,
+      properties: user.saved,
+    });
+  } catch (error) {
+    console.error("Error fetching saved properties:", error.message);
+    return res.status(500).json({ message: "Unable to load saved properties" });
+  }
+};
+
+exports.getSearchHistory = async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const nextHistory = limitSearchHistory(
+      pruneExpiredSearchHistory(user.searchHistory || []),
+      5,
+    );
+
+    if (JSON.stringify(nextHistory) !== JSON.stringify(user.searchHistory || [])) {
+      user.searchHistory = nextHistory;
+      await user.save();
+    }
+
+    return res.status(200).json({ success: true, history: nextHistory });
+  } catch (error) {
+    console.error("Error fetching search history:", error.message);
+    return res.status(500).json({ message: "Unable to load search history" });
+  }
+};
+
+exports.addSearchHistory = async (req, res) => {
+  try {
+    const normalizedEntry = normalizeSearchHistoryEntry(req.body);
+    if (!normalizedEntry) {
+      return res.status(400).json({ message: "Search query is required" });
+    }
+
+    const user = await Users.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const existingHistory = pruneExpiredSearchHistory(user.searchHistory || []);
+    const dedupedHistory = existingHistory.filter((entry) => {
+      const sameQuery =
+        String(entry.query ?? "").toLowerCase() !==
+        normalizedEntry.query.toLowerCase();
+      const samePurpose =
+        (entry.purpose ?? "") !== (normalizedEntry.purpose ?? "");
+      const sameCategory =
+        (entry.category ?? "") !== (normalizedEntry.category ?? "");
+      return sameQuery || samePurpose || sameCategory;
+    });
+
+    const nextHistory = limitSearchHistory(
+      [normalizedEntry, ...dedupedHistory],
+      5,
+    );
+
+    user.searchHistory = nextHistory;
+    await user.save();
+
+    return res.status(200).json({ success: true, history: nextHistory });
+  } catch (error) {
+    console.error("Error saving search history:", error.message);
+    return res.status(500).json({ message: "Unable to save search history" });
+  }
+};
+
+exports.clearSearchHistory = async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    user.searchHistory = [];
+    await user.save();
+
+    return res.status(200).json({ success: true, history: [] });
+  } catch (error) {
+    console.error("Error clearing search history:", error.message);
+    return res.status(500).json({ message: "Unable to clear search history" });
+  }
+};
+
+exports.toggleSavedProperty = async (req, res) => {
+  try {
+    const propertyId = req.params.propertyId;
+
+    if (!mongoose.Types.ObjectId.isValid(propertyId)) {
+      return res.status(400).json({ message: "Invalid property id" });
+    }
+
+    const property = await Properties.findById(propertyId);
+    if (!property) {
+      return res.status(404).json({ message: "Property not found" });
+    }
+
+    const user = await Users.findById(req.user.userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const savedIds = user.saved.map((id) => String(id));
+    const isSaved = savedIds.includes(propertyId);
+    const nextSavedIds = toggleSavedPropertyIds(savedIds, propertyId);
+
+    user.saved = nextSavedIds.map((id) => new mongoose.Types.ObjectId(id));
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      saved: !isSaved,
+      savedPropertyIds: user.saved.map((id) => String(id)),
+      savedCount: user.saved.length,
+    });
+  } catch (error) {
+    console.error("Error toggling saved property:", error.message);
+    return res.status(500).json({ message: "Unable to update saved property" });
+  }
+};
+
 exports.getPublicProfile = async (req, res) => {
   try {
     if (!mongoose.Types.ObjectId.isValid(req.params.userId)) {
@@ -260,6 +487,10 @@ exports.getPublicProfile = async (req, res) => {
       avatar: { url: user.avatar?.url },
       bio: user.bio || "",
       createdAt: user.createdAt,
+      averageRating: Number(user.averageRating ?? 0),
+      totalReviews: Number(user.totalReviews ?? 0),
+      ratingCount: Number(user.ratingCount ?? 0),
+      lastReviewedAt: user.lastReviewedAt || null,
     };
     if (user.publicContact?.showPhone && user.phoneNumber) {
       profile.phoneNumber = user.phoneNumber;

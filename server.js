@@ -42,9 +42,13 @@ app.get("/api/health", (req, res) => {
 //Routes
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
+const reviewRoutes = require("./routes/reviewRoutes");
 const propertyRoutes = require("./routes/propertyRoutes");
+const dealRoutes = require("./routes/dealRoutes");
 
 //use routes
+app.use("/api", reviewRoutes);
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/properties", propertyRoutes);
+app.use("/api/deals", dealRoutes);

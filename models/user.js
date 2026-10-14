@@ -21,6 +21,16 @@ const UserSchema = new mongoose.Schema(
       default: "user",
     },
     saved: [{ type: mongoose.Schema.Types.ObjectId, ref: "Property" }],
+    searchHistory: [
+      {
+        id: { type: String },
+        query: { type: String, trim: true },
+        purpose: { type: String, trim: true },
+        category: { type: String, trim: true },
+        createdAt: { type: Date, default: Date.now },
+        expiresAt: { type: Date, default: Date.now },
+      },
+    ],
     messages: [{ type: mongoose.Schema.Types.ObjectId, ref: "Message" }],
     properties: [{ type: mongoose.Schema.Types.ObjectId, ref: "Property" }],
     subscription: [
@@ -32,6 +42,10 @@ const UserSchema = new mongoose.Schema(
     phoneNumber: { type: String, unique: true, sparse: true, required: true },
     bio: { type: String, trim: true, maxlength: 280, default: "" },
     publicContact: { type: publicContactSchema, default: () => ({}) },
+    averageRating: { type: Number, default: 0, min: 0, max: 5 },
+    totalReviews: { type: Number, default: 0, min: 0 },
+    ratingCount: { type: Number, default: 0, min: 0 },
+    lastReviewedAt: { type: Date, default: null },
 
     coordinates: {
       long: { type: Number },

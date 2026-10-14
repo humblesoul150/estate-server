@@ -1,18 +1,35 @@
 const mongoose = require("mongoose");
 
-const ListingSchema = new mongoose.Schema({
-  propertyId: { type: mongoose.Schema.Types.ObjectId, ref: "Property" },
-  purpose: { type: String, enum: ["rent", "sale"] },
-  billingPeriod: {
-    type: String,
-    enum: ["weekly", "monthly", "yearly", "one-time"],
+const listingSchema = new mongoose.Schema(
+  {
+    propertyId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Property",
+      required: true,
+      index: true,
+    },
+    purpose: { type: String, enum: ["rent", "sale"], required: true },
+    billingPeriod: {
+      type: String,
+      enum: ["weekly", "monthly", "yearly", "one-time"],
+    },
+    status: {
+      type: String,
+      enum: ["draft", "published", "paused", "closed"],
+      default: "draft",
+      index: true,
+    },
+    price: { type: Number, required: true, min: 0 },
+    currency: { type: String, required: true, trim: true, uppercase: true },
+    serviceFee: { type: Number, min: 0 },
+    negotiable: { type: Boolean, default: false },
+    availableFrom: { type: String, trim: true },
+    publishedAt: { type: Date },
   },
-  status: { type: String, enum: ["draft", "published", "paused", "closed"] },
-  price: Number,
-  currency: String,
-  serviceFee: String,
-  negotiable: Boolean,
-  availableFrom: String,
-  publishedAt: Date,
-});
-module.export = mongoose.model("Listing", ListingSchema);
+  { timestamps: true },
+);
+
+listingSchema.index({ propertyId: 1, purpose: 1, status: 1 });
+
+module.exports =
+  mongoose.models.Listing || mongoose.model("Listing", listingSchema);
