@@ -68,7 +68,7 @@ const recomputeOwnerRating = async (reviewedUserId) => {
     {
       $match: {
         reviewedUserId: new mongoose.Types.ObjectId(targetId),
-        status: { $ne: 'hidden' },
+        status: 'active',
       },
     },
     {
@@ -89,7 +89,7 @@ const recomputeOwnerRating = async (reviewedUserId) => {
   const averageRating = summary?.averageRating ?? 0;
   const latestReview = await Review.findOne({
     reviewedUserId: targetId,
-    status: { $ne: 'hidden' },
+    status: 'active',
   }).sort({ createdAt: -1 });
 
   user.averageRating = totalReviews ? Number(Number(averageRating).toFixed(1)) : 0;
@@ -108,6 +108,7 @@ const recomputeOwnerRating = async (reviewedUserId) => {
 
 const serializeReview = (review) => {
   const reviewer = review.reviewerId && review.reviewerId._id ? review.reviewerId : null;
+  const reviewedUser = review.reviewedUserId && review.reviewedUserId._id ? review.reviewedUserId : null;
   const property = review.propertyId && review.propertyId._id ? review.propertyId : null;
 
   return {
@@ -118,6 +119,7 @@ const serializeReview = (review) => {
     rating: Number(review.rating),
     comment: review.comment || '',
     status: review.status,
+    moderationNote: review.moderationNote || '',
     createdAt: review.createdAt,
     updatedAt: review.updatedAt,
     reviewer: reviewer
@@ -134,6 +136,14 @@ const serializeReview = (review) => {
           name: property.name || 'Property',
         }
       : null,
+    reviewedUser: reviewedUser
+      ? {
+          id: String(reviewedUser._id),
+          firstName: reviewedUser.firstName || '',
+          lastName: reviewedUser.lastName || '',
+          role: reviewedUser.role || '',
+        }
+      : null,
   };
 };
 
@@ -146,7 +156,7 @@ const getReviewList = async (req, res) => {
 
     const reviews = await Review.find({
       reviewedUserId: userId,
-      status: { $ne: 'hidden' },
+      status: 'active',
     })
       .sort({ createdAt: -1 })
       .populate('reviewerId', 'firstName lastName avatar')
@@ -171,7 +181,7 @@ const getReviewSummary = async (req, res) => {
 
     const reviews = await Review.find({
       reviewedUserId: userId,
-      status: { $ne: 'hidden' },
+      status: 'active',
     });
 
     return res.status(200).json({
@@ -198,7 +208,7 @@ const listReviewsAdmin = async (req, res) => {
     const reviews = await Review.find(filter)
       .sort({ createdAt: -1 })
       .populate('reviewerId', 'firstName lastName avatar')
-      .populate('reviewedUserId', 'firstName lastName role')
+      .populate('reviewedUserId', 'firstName lastName role avatar')
       .populate('propertyId', 'name');
 
     return res.status(200).json({
@@ -317,7 +327,10 @@ const deleteReview = async (req, res) => {
       return res.status(404).json({ message: 'Review not found' });
     }
 
-    if (String(review.reviewerId) !== String(req.user.userId)) {
+    if (
+      req.user.role !== 'admin' &&
+      String(review.reviewerId) !== String(req.user.userId)
+    ) {
       return res.status(403).json({ message: 'You can only delete your own review' });
     }
 
