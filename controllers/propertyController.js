@@ -105,11 +105,14 @@ const createMarketplaceProperty = async (req, res) => {
     }
 
     const files = req.files || [];
-    const images = await persistImages(payload.images, files);
+    const images = await persistImages(Array.isArray(payload.images) ? payload.images : [], files);
     const units = await Promise.all(
       (payload.units || []).map(async (unit) => ({
         ...unit,
-        images: await persistImages(unit.images, files),
+        images: await persistImages(
+          Array.isArray(unit.images) ? unit.images : [],
+          files,
+        ),
       })),
     );
     property = await Property.create({

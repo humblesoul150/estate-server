@@ -20,6 +20,12 @@ const MessageSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    clientMessageId: {
+      type: String,
+      trim: true,
+      required: true,
+      index: true,
+    },
 
     text: {
       type: String,
@@ -85,6 +91,10 @@ const MessageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    deletedAt: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: true,
@@ -95,5 +105,9 @@ MessageSchema.index({
   conversation: 1,
   createdAt: -1,
 });
+MessageSchema.index(
+  { conversation: 1, sender: 1, clientMessageId: 1 },
+  { unique: true },
+);
 
 module.exports = mongoose.model("Message", MessageSchema);

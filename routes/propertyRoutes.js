@@ -33,6 +33,7 @@ router.get("/marketplace", propertyFeedLimiter, getMarketplaceProperties);
 router.post(
   "/marketplace",
   authMiddleware,
+  requireAdmin,
   upload.array("images", 60),
   createMarketplaceProperty,
 );
