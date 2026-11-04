@@ -5,6 +5,7 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const mongoose = require("mongoose");
 const Conversation = require("./models/converation");
+const Message = require("./models/message");
 const dotenv = require("dotenv");
 const cors = require("cors");
 const { connectDb } = require("./configs/connectDb");
@@ -30,59 +31,136 @@ io.use((socket, next) => {
 });
 
 io.on("connection", (socket) => {
+  const userId = String(socket.user.userId);
+  socket.join(`user:${userId}`);
+  if (socket.user.role === "admin") socket.join("support:admins");
+
   socket.on("conversation:join", async (conversationId, acknowledge = () => {}) => {
-    if (!mongoose.isValidObjectId(conversationId)) {
-      return acknowledge({ success: false, message: "Invalid conversation." });
+    const acknowledgeSafely =
+      typeof acknowledge === "function" ? acknowledge : () => {};
+    try {
+      if (!mongoose.isValidObjectId(conversationId)) {
+        return acknowledgeSafely({ success: false, message: "Invalid conversation." });
+      }
+      const conversation = await Conversation.findOne({
+        _id: conversationId,
+        $or: [
+          { participants: userId },
+          {
+            type: "support",
+            supportAssignee: userId,
+          },
+        ],
+      }).select("_id");
+      if (!conversation) {
+        return acknowledgeSafely({ success: false, message: "Conversation not found." });
+      }
+      socket.join(`conversation:${conversationId}`);
+      await Message.updateMany(
+        {
+          conversation: conversationId,
+          receiver: userId,
+          status: "sent",
+          deleted: false,
+        },
+        { status: "delivered", deliveredAt: new Date() },
+      );
+      socket.to(`conversation:${conversationId}`).emit("message:status", {
+        conversationId,
+        status: "delivered",
+        receiverId: userId,
+      });
+      return acknowledgeSafely({ success: true, conversationId });
+    } catch (error) {
+      logger.error("Unable to join messaging conversation", {
+        message: error.message,
+      });
+      return acknowledgeSafely({ success: false, message: "Unable to join conversation." });
     }
-    const conversation = await Conversation.findOne({
-      _id: conversationId,
-      participants: socket.user.userId,
-    }).select("_id");
-    if (!conversation) {
-      return acknowledge({ success: false, message: "Conversation not found." });
-    }
-    socket.join(`conversation:${conversationId}`);
-    await require("./models/message").updateMany(
-      {
-        conversation: conversationId,
-        receiver: socket.user.userId,
-        status: "sent",
-        deleted: false,
-      },
-      { status: "delivered", deliveredAt: new Date() },
-    );
-    socket.to(`conversation:${conversationId}`).emit("message:status", {
-      conversationId,
-      status: "delivered",
-      receiverId: socket.user.userId,
-    });
-    return acknowledge({ success: true, conversationId });
   });
 
   socket.on("typing:start", async (conversationId) => {
-    if (!mongoose.isValidObjectId(conversationId)) return;
-    const conversation = await Conversation.exists({
-      _id: conversationId,
-      participants: socket.user.userId,
-    });
-    if (!conversation) return;
-    socket.to(`conversation:${conversationId}`).emit("typing:start", {
-      conversationId,
-      userId: socket.user.userId,
-    });
+    try {
+      if (!mongoose.isValidObjectId(conversationId)) return;
+      const conversation = await Conversation.exists({
+        _id: conversationId,
+        $or: [
+          { participants: userId },
+          { type: "support", supportAssignee: userId },
+        ],
+      });
+      if (!conversation) return;
+      socket.to(`conversation:${conversationId}`).emit("typing:start", {
+        conversationId,
+        userId,
+      });
+    } catch (error) {
+      logger.error("Unable to process typing event", { message: error.message });
+    }
   });
 
   socket.on("typing:stop", async (conversationId) => {
-    if (!mongoose.isValidObjectId(conversationId)) return;
-    const conversation = await Conversation.exists({
-      _id: conversationId,
-      participants: socket.user.userId,
-    });
-    if (!conversation) return;
-    socket.to(`conversation:${conversationId}`).emit("typing:stop", {
-      conversationId,
-      userId: socket.user.userId,
-    });
+    try {
+      if (!mongoose.isValidObjectId(conversationId)) return;
+      const conversation = await Conversation.exists({
+        _id: conversationId,
+        $or: [
+          { participants: userId },
+          { type: "support", supportAssignee: userId },
+        ],
+      });
+      if (!conversation) return;
+      socket.to(`conversation:${conversationId}`).emit("typing:stop", {
+        conversationId,
+        userId,
+      });
+    } catch (error) {
+      logger.error("Unable to process typing event", { message: error.message });
+    }
+  });
+
+  socket.on("message:delivered", async (payload = {}) => {
+    try {
+      const { conversationId, messageId } = payload || {};
+      if (
+        !mongoose.isValidObjectId(conversationId) ||
+        !mongoose.isValidObjectId(messageId)
+      ) return;
+      const conversation = await Conversation.exists({
+        _id: conversationId,
+        participants: userId,
+      });
+      if (!conversation) return;
+      const result = await Message.updateOne(
+        {
+          _id: messageId,
+          conversation: conversationId,
+          receiver: userId,
+          status: "sent",
+          deleted: false,
+        },
+        { status: "delivered", deliveredAt: new Date() },
+      );
+      if (!result.modifiedCount) return;
+      io.to(`conversation:${conversationId}`).emit("message:status", {
+        conversationId,
+        messageId,
+        status: "delivered",
+        receiverId: userId,
+      });
+    } catch (error) {
+      logger.error("Unable to update message delivery status", {
+        message: error.message,
+      });
+    }
+  });
+
+  socket.on("disconnecting", () => {
+    for (const room of socket.rooms) {
+      if (!room.startsWith("conversation:")) continue;
+      const conversationId = room.slice("conversation:".length);
+      socket.to(room).emit("typing:stop", { conversationId, userId });
+    }
   });
 });
 

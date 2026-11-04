@@ -5,7 +5,13 @@ const ConversationSchema = new mongoose.Schema(
     property: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Property",
-      required: true,
+      default: null,
+      index: true,
+    },
+    type: {
+      type: String,
+      enum: ["property", "support"],
+      default: "property",
       index: true,
     },
     participants: [
@@ -21,10 +27,27 @@ const ConversationSchema = new mongoose.Schema(
       unique: true,
       index: true,
     },
+    supportUser: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
+    supportAssignee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+      index: true,
+    },
     unreadCount: {
       type: Map,
       of: Number,
       default: {},
+    },
+    supportUnreadCount: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     archivedBy: [
       {

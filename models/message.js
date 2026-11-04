@@ -18,7 +18,7 @@ const MessageSchema = new mongoose.Schema(
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
     },
     clientMessageId: {
       type: String,
@@ -51,6 +51,14 @@ const MessageSchema = new mongoose.Schema(
       },
 
       fileName: {
+        type: String,
+        default: null,
+      },
+      mimeType: {
+        type: String,
+        default: null,
+      },
+      resourceType: {
         type: String,
         default: null,
       },
