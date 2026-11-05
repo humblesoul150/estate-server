@@ -36,7 +36,7 @@ const UserSchema = new mongoose.Schema(
     subscription: [
       { type: mongoose.Schema.Types.ObjectId, ref: "Subscription" },
     ],
-    nin: { type: String, unique: true },
+    nin: { type: String },
     dob: { type: String },
     gender: { type: String, enum: ["male", "female", "other"] },
     phoneNumber: { type: String, unique: true, sparse: true, required: true },

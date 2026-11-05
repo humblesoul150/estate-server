@@ -82,6 +82,19 @@ async function verifyResetCodeForUser(email, code, record) {
 exports.normalizeResetCode = normalizeResetCode;
 exports.buildPasswordResetEmailHtml = buildPasswordResetEmailHtml;
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizePhone(value) {
+  if (typeof value !== "string" && typeof value !== "number") {
+    return null;
+  }
+
+  const phone = String(value).trim().replace(/[\s().-]/g, "");
+  return /^\+?\d{7,15}$/.test(phone) ? phone : null;
+}
+
 exports.requestPasswordReset = async (req, res) => {
   try {
     const { email } = req.body;
@@ -232,40 +245,108 @@ exports.registerUser = async (req, res) => {
       dob,
       phone,
       coordinates,
-    } = req.body;
+    } = req.body || {};
+    const normalizedFirstName =
+      typeof firstName === "string" ? firstName.trim() : "";
+    const normalizedLastName =
+      typeof lastName === "string" ? lastName.trim() : "";
+    const normalizedEmail =
+      typeof email === "string" ? email.trim().toLowerCase() : "";
+    const normalizedPassword =
+      typeof password === "string" ? password : "";
+    const normalizedPhone = normalizePhone(phone);
+    const normalizedNin = typeof nin === "string" ? nin.trim() : "";
+    const normalizedGender = typeof gender === "string" ? gender : "";
+    const normalizedDob = typeof dob === "string" ? dob.trim() : "";
     const accountRole = role || "user";
 
-    if (!firstName || !lastName || !password) {
-      return res.status(400).json({ message: "All fields are required" });
+    if (
+      !normalizedFirstName ||
+      !normalizedLastName ||
+      !normalizedEmail ||
+      !normalizedPassword ||
+      !phone
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "First name, last name, email, password, and phone are required.",
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid email address.",
+      });
+    }
+
+    if (normalizedPassword.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters long.",
+      });
+    }
+
+    if (!normalizedPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid phone number, including its country code if needed.",
+      });
     }
 
     if (!["user", "landlord", "propertyManager"].includes(accountRole)) {
-      return res.status(400).json({ message: "Invalid account type" });
+      return res.status(400).json({
+        success: false,
+        message: "Invalid account type.",
+      });
     }
 
-    const existingUser = await Users.findOne({
-      email,
-      nin,
-      phoneNumber: phone,
-    });
+    if (!["male", "female", "other"].includes(normalizedGender)) {
+      return res.status(400).json({
+        success: false,
+        message: "Select a valid gender.",
+      });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      logger.error("Registration unavailable because JWT_SECRET is not configured");
+      return res.status(500).json({
+        success: false,
+        message: "Registration is temporarily unavailable. Please try again later.",
+      });
+    }
+
+    const duplicateConditions = [
+      {
+        email: {
+          $regex: `^${escapeRegExp(normalizedEmail)}$`,
+          $options: "i",
+        },
+      },
+      { phoneNumber: normalizedPhone },
+    ];
+    if (normalizedNin) {
+      duplicateConditions.push({ nin: normalizedNin });
+    }
+
+    const existingUser = await Users.findOne({ $or: duplicateConditions });
     if (existingUser) {
-      return res
-        .status(400)
-        .json({ message: "Account with similar details already exists!" });
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email, phone number, or NIN already exists.",
+      });
     }
 
-    let newUser = null;
-
-    newUser = new Users({
-      firstName,
-      lastName,
-      email,
-      password: await bcrypt.hash(password.toString(), 10),
+    const newUser = new Users({
+      firstName: normalizedFirstName,
+      lastName: normalizedLastName,
+      email: normalizedEmail,
+      password: await bcrypt.hash(normalizedPassword, 10),
       role: accountRole,
-      nin,
-      dob,
-      gender,
-      phoneNumber: phone,
+      nin: normalizedNin || undefined,
+      dob: normalizedDob,
+      gender: normalizedGender,
+      phoneNumber: normalizedPhone,
       coordinates: coordinates
         ? { long: coordinates.long, lat: coordinates.lat }
         : { long: null, lat: null },
@@ -276,13 +357,14 @@ exports.registerUser = async (req, res) => {
       subscription: [],
       avatar: { url: null, publicId: null },
     });
-    await newUser.save();
 
     const token = jwt.sign(
       { userId: newUser._id, email: newUser.email, role: newUser.role },
       process.env.JWT_SECRET,
       { expiresIn: "7d" },
     );
+    await newUser.save();
+
     const userData = {
       id: newUser._id,
       firstName: newUser.firstName,
@@ -292,21 +374,34 @@ exports.registerUser = async (req, res) => {
       nin: newUser.nin,
       dob: newUser.dob,
       gender: newUser.gender,
-      phoneNumber: phone,
+      phoneNumber: newUser.phoneNumber,
       coordinates: newUser.coordinates,
       avatar: newUser.avatar,
       bio: newUser.bio,
       publicContact: newUser.publicContact,
     };
-    res.status(201).json({
+    return res.status(201).json({
       message: "User registered successfully",
       success: true,
       user: userData,
       token,
     });
   } catch (error) {
-    res.status(500).json({ message: "Server error", error: error.message });
-    console.error("Error in registerUser:", error);
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "An account with this email, phone number, or NIN already exists.",
+      });
+    }
+
+    logger.error("Registration failed", {
+      message: error.message,
+      code: error.code,
+    });
+    return res.status(500).json({
+      success: false,
+      message: "Unable to complete registration right now. Please try again later.",
+    });
   }
 };
 
