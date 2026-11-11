@@ -7,14 +7,11 @@ const mongoose = require("mongoose");
 const Conversation = require("./models/converation");
 const Message = require("./models/message");
 const dotenv = require("dotenv");
-const cors = require("cors");
 const { connectDb } = require("./configs/connectDb");
 const logger = require("./configs/logger");
 dotenv.config();
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, {
-  cors: { origin: true, credentials: true },
-});
+const io = new Server(httpServer);
 app.set("io", io);
 
 io.use((socket, next) => {
@@ -166,7 +163,6 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 4444;
 const HOST = process.env.HOST || "0.0.0.0";
-app.use(cors());
 app.use(express.json());
 
 // Connect to DB, then start server
