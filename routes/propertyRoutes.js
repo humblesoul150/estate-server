@@ -1,7 +1,6 @@
 const express = require("express");
 const { rateLimit } = require("express-rate-limit");
 const {
-  getProperties,
   createMarketplaceProperty,
   getMarketplaceProperties,
   getMarketplacePropertiesForReview,
@@ -47,6 +46,7 @@ router.patch(
   "/marketplace/:propertyId",
   authMiddleware,
   requireAdmin,
+  upload.array("images", 60),
   updateMarketplaceProperty,
 );
 router.delete(
@@ -61,6 +61,6 @@ router.patch(
   requireAdmin,
   moderateMarketplaceProperty,
 );
-router.get("/all", propertyFeedLimiter, getProperties);
+router.get("/all", propertyFeedLimiter, getMarketplaceProperties);
 
 module.exports = router;

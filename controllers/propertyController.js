@@ -1,17 +1,12 @@
-const axios = require("axios");
 const mongoose = require("mongoose");
 const { Readable } = require("stream");
 const logger = require("../configs/logger");
 const Property = require("../models/property");
 const Listing = require("../models/listing");
+const Users = require("../models/user");
+const bcrypt = require("bcryptjs");
 const cloudinary = require("../configs/cloudinary");
-
-const PROPERTY_SOURCE_URL =
-  process.env.PROPERTY_SOURCE_URL ||
-  "https://tenant-server-dct1.onrender.com/api/property/all";
-const PROPERTY_SOURCE_TIMEOUT_MS = Number(
-  process.env.PROPERTY_SOURCE_TIMEOUT_MS || 8000,
-);
+const SUPPORTED_CURRENCIES = require("../utils/currencies");
 
 const uploadImage = (file) =>
   new Promise((resolve, reject) => {
@@ -25,9 +20,22 @@ const uploadImage = (file) =>
     Readable.from(file.buffer).pipe(stream);
   });
 
-const persistImages = async (images = [], files = []) =>
+const persistImages = async (images = [], files = [], preserveExisting = false) =>
   Promise.all(
     images.map(async (image) => {
+      if (
+        preserveExisting &&
+        image?.uploadIndex === undefined &&
+        typeof image?.url === "string" &&
+        /^https?:\/\//i.test(image.url)
+      ) {
+        return {
+          title: image.title || "Property image",
+          url: image.url,
+          publicId: image.publicId ?? image.public_id,
+        };
+      }
+
       const file = files[Number(image.uploadIndex)];
       if (!file) {
         throw new Error("An uploaded property image is missing.");
@@ -43,44 +51,6 @@ const persistImages = async (images = [], files = []) =>
 
 const serializeMarketplaceProperty = (property) => property.toJSON();
 
-const getProperties = async (req, res) => {
-  try {
-    const response = await axios.get(PROPERTY_SOURCE_URL, {
-      timeout: PROPERTY_SOURCE_TIMEOUT_MS,
-      headers: { Accept: "application/json" },
-    });
-    if (
-      !response.data ||
-      typeof response.data !== "object" ||
-      !Array.isArray(response.data.properties)
-    ) {
-      logger.warn("Property source returned an invalid response shape");
-      return res.status(502).json({
-        message: "Property data source returned an invalid response",
-      });
-    }
-
-    return res.status(200).json({ properties: response.data.properties });
-  } catch (error) {
-    if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") {
-      logger.warn("Property source request timed out", {
-        code: error.code,
-      });
-      return res.status(504).json({
-        message: "Property data source timed out",
-      });
-    }
-
-    logger.error("Property source request failed", {
-      message: error.message,
-      status: error.response?.status,
-    });
-    return res.status(502).json({
-      message: "Unable to retrieve properties",
-    });
-  }
-};
-
 const createMarketplaceProperty = async (req, res) => {
   let property;
   try {
@@ -89,6 +59,10 @@ const createMarketplaceProperty = async (req, res) => {
     if (!payload || typeof payload !== "object") {
       return res.status(400).json({ message: "A property payload is required." });
     }
+    const listingCurrency =
+      typeof payload.listing?.currency === "string"
+        ? payload.listing.currency.trim().toUpperCase()
+        : "";
     if (
       !payload.name?.trim() ||
       !payload.description?.trim() ||
@@ -99,9 +73,12 @@ const createMarketplaceProperty = async (req, res) => {
       !["rent", "sale"].includes(payload.listing.purpose) ||
       !Number.isFinite(Number(payload.listing.price)) ||
       Number(payload.listing.price) < 0 ||
-      !payload.listing.currency?.trim()
+      !listingCurrency
     ) {
       return res.status(400).json({ message: "The property or listing details are invalid." });
+    }
+    if (!SUPPORTED_CURRENCIES.includes(listingCurrency)) {
+      return res.status(400).json({ message: "Please choose a supported currency." });
     }
 
     const files = req.files || [];
@@ -144,7 +121,7 @@ const createMarketplaceProperty = async (req, res) => {
         purpose: payload.listing.purpose,
         status: "draft",
         price: Number(payload.listing.price),
-        currency: payload.listing.currency.trim(),
+        currency: listingCurrency,
         billingPeriod:
           payload.listing.purpose === "sale"
             ? "one-time"
@@ -259,19 +236,63 @@ const updateMarketplaceProperty = async (req, res) => {
     if (!property) {
       return res.status(404).json({ message: "Property not found." });
     }
-    const propertyUpdates = req.body?.property || {};
-    const listingUpdates = req.body?.listing || {};
-    const allowedListingFields = ["price", "currency", "negotiable", "availableFrom"];
+    let payload = req.body?.payload;
+    if (typeof payload === "string") {
+      try {
+        payload = JSON.parse(payload);
+      } catch {
+        return res.status(400).json({ message: "The property payload is invalid." });
+      }
+    }
+    payload = payload || req.body || {};
+    const propertyUpdates = payload.property || payload;
+    const listingUpdates = payload.listing || {};
+    const allowedListingFields = [
+      "purpose",
+      "price",
+      "currency",
+      "billingPeriod",
+      "serviceFee",
+      "negotiable",
+      "availableFrom",
+    ];
     const listingUpdate = {};
     allowedListingFields.forEach((field) => {
       if (listingUpdates[field] !== undefined) {
         listingUpdate[field] = listingUpdates[field];
       }
     });
-    if (listingUpdate.price !== undefined && Number(listingUpdate.price) < 0) {
+    if (listingUpdate.currency !== undefined) {
+      if (typeof listingUpdate.currency !== "string") {
+        return res.status(400).json({ message: "Please choose a supported currency." });
+      }
+      listingUpdate.currency = listingUpdate.currency.trim().toUpperCase();
+      if (!SUPPORTED_CURRENCIES.includes(listingUpdate.currency)) {
+        return res.status(400).json({ message: "Please choose a supported currency." });
+      }
+    }
+    if (
+      listingUpdate.price !== undefined &&
+      (!Number.isFinite(Number(listingUpdate.price)) ||
+        Number(listingUpdate.price) < 0)
+    ) {
       return res.status(400).json({ message: "Listing price must not be negative." });
     }
-    const listingId = req.body?.listingId;
+    if (
+      listingUpdate.serviceFee !== undefined &&
+      listingUpdate.serviceFee !== null &&
+      (!Number.isFinite(Number(listingUpdate.serviceFee)) ||
+        Number(listingUpdate.serviceFee) < 0)
+    ) {
+      return res.status(400).json({ message: "Service fee must not be negative." });
+    }
+    if (
+      listingUpdate.purpose !== undefined &&
+      !["rent", "sale"].includes(listingUpdate.purpose)
+    ) {
+      return res.status(400).json({ message: "Please choose a valid listing purpose." });
+    }
+    const listingId = payload.listingId;
     if (Object.keys(listingUpdate).length) {
       if (!mongoose.isValidObjectId(listingId)) {
         return res.status(400).json({ message: "A valid listingId is required." });
@@ -284,12 +305,93 @@ const updateMarketplaceProperty = async (req, res) => {
         return res.status(404).json({ message: "Listing not found for this property." });
       }
     }
-    const allowedPropertyFields = ["name", "description"];
+    const stringFields = [
+      "name",
+      "address",
+      "city",
+      "country",
+      "category",
+      "estate",
+      "propertyType",
+      "description",
+    ];
+    for (const field of stringFields) {
+      if (
+        propertyUpdates[field] !== undefined &&
+        typeof propertyUpdates[field] !== "string"
+      ) {
+        return res.status(400).json({ message: `${field} must be a string.` });
+      }
+    }
+    const allowedPropertyFields = stringFields;
     allowedPropertyFields.forEach((field) => {
-      if (typeof propertyUpdates[field] === "string") {
+      if (propertyUpdates[field] !== undefined) {
         property[field] = propertyUpdates[field].trim();
       }
     });
+    if (propertyUpdates.location !== undefined) {
+      const { lat, lng } = propertyUpdates.location || {};
+      if (!Number.isFinite(Number(lat)) || !Number.isFinite(Number(lng))) {
+        return res.status(400).json({ message: "A valid property location is required." });
+      }
+      property.location = { lat: Number(lat), lng: Number(lng) };
+    }
+    for (const field of ["features", "specifications", "units", "images"]) {
+      if (
+        propertyUpdates[field] !== undefined &&
+        !Array.isArray(propertyUpdates[field])
+      ) {
+        return res.status(400).json({ message: `${field} must be a list.` });
+      }
+    }
+    if (
+      propertyUpdates.policies !== undefined &&
+      (!propertyUpdates.policies ||
+        typeof propertyUpdates.policies !== "object" ||
+        Array.isArray(propertyUpdates.policies))
+    ) {
+      return res.status(400).json({ message: "Property policies are invalid." });
+    }
+    if (propertyUpdates.features !== undefined) {
+      property.features = propertyUpdates.features;
+    }
+    if (propertyUpdates.specifications !== undefined) {
+      property.specifications = propertyUpdates.specifications;
+    }
+    if (propertyUpdates.policies !== undefined) {
+      property.policies = propertyUpdates.policies;
+    }
+    if (propertyUpdates.units !== undefined) {
+      const files = req.files || [];
+      property.units = await Promise.all(
+        propertyUpdates.units.map(async (unit) => ({
+          ...unit,
+          images: await persistImages(
+            Array.isArray(unit.images) ? unit.images : [],
+            files,
+            true,
+          ),
+        })),
+      );
+      property.units_available = property.units.filter(
+        (unit) => unit.isAvailable !== false,
+      ).length;
+      property.customizeUnits = property.units.length > 1;
+    }
+    if (propertyUpdates.images !== undefined) {
+      property.images = await persistImages(
+        propertyUpdates.images,
+        req.files || [],
+        true,
+      );
+    }
+    if (listingUpdate.serviceFee !== undefined) {
+      listingUpdate.serviceFee =
+        listingUpdate.serviceFee === null
+          ? null
+          : Number(listingUpdate.serviceFee);
+      property.serviceFee = listingUpdate.serviceFee;
+    }
     await property.save();
 
     if (listingUpdate.price !== undefined) {
@@ -325,9 +427,21 @@ const updateMarketplaceProperty = async (req, res) => {
 const deleteMarketplaceProperty = async (req, res) => {
   try {
     const { propertyId } = req.params;
+    const { currentPassword } = req.body || {};
 
     if (!mongoose.isValidObjectId(propertyId)) {
       return res.status(400).json({ message: "A valid property id is required." });
+    }
+    if (typeof currentPassword !== "string" || !currentPassword) {
+      return res.status(400).json({ message: "Your current password is required." });
+    }
+
+    const user = await Users.findById(req.user.userId).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (!(await bcrypt.compare(currentPassword, user.password))) {
+      return res.status(403).json({ message: "Current password is incorrect." });
     }
 
     const property = await Property.findById(propertyId);
@@ -400,7 +514,6 @@ exports.getAllProperties = async (req, res) => {
 };
 
 module.exports = {
-  getProperties,
   createMarketplaceProperty,
   getMarketplaceProperties,
   getMarketplacePropertiesForReview,

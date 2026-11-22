@@ -5,6 +5,7 @@ const {
   updateProfile,
   getPublicProfile,
   changePassword,
+  verifyCurrentPassword,
   deleteAccount,
   getSavedProperties,
   toggleSavedProperty,
@@ -32,6 +33,7 @@ router.patch(
 router.delete("/me/avatar", authMiddleware, removeAvatar);
 router.patch("/me", authMiddleware, updateProfile);
 router.patch("/me/password", authMiddleware, changePassword);
+router.post("/me/verify-password", authMiddleware, verifyCurrentPassword);
 router.delete("/me", authMiddleware, deleteAccount);
 
 module.exports = router;

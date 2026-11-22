@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const SUPPORTED_CURRENCIES = require("../utils/currencies");
 
 const listingSchema = new mongoose.Schema(
   {
@@ -20,7 +21,13 @@ const listingSchema = new mongoose.Schema(
       index: true,
     },
     price: { type: Number, required: true, min: 0 },
-    currency: { type: String, required: true, trim: true, uppercase: true },
+    currency: {
+      type: String,
+      required: true,
+      trim: true,
+      uppercase: true,
+      enum: SUPPORTED_CURRENCIES,
+    },
     serviceFee: { type: Number, min: 0 },
     negotiable: { type: Boolean, default: false },
     availableFrom: { type: String, trim: true },

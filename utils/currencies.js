@@ -1,0 +1,15 @@
+module.exports = Object.freeze([
+  "BIF",
+  "CDF",
+  "KES",
+  "RWF",
+  "SOS",
+  "SSP",
+  "TZS",
+  "UGX",
+  "USD",
+  "EUR",
+  "GBP",
+  "INR",
+  "CNY",
+]);

@@ -537,6 +537,28 @@ exports.changePassword = async (req, res) => {
   }
 };
 
+exports.verifyCurrentPassword = async (req, res) => {
+  const { currentPassword } = req.body || {};
+  if (typeof currentPassword !== "string" || !currentPassword) {
+    return res.status(400).json({ message: "Your current password is required." });
+  }
+
+  try {
+    const user = await Users.findById(req.user.userId).select("+password");
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+    if (!(await bcrypt.compare(currentPassword, user.password))) {
+      return res.status(403).json({ message: "Current password is incorrect." });
+    }
+
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("Password verification failed:", error.message);
+    return res.status(500).json({ message: "Unable to verify your password." });
+  }
+};
+
 exports.deleteAccount = async (req, res) => {
   const { password } = req.body;
   if (!password) {
