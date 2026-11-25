@@ -5,6 +5,13 @@ const Properties = require("../models/property");
 const Messages = require("../models/message");
 const Conversations = require("../models/converation");
 const cloudinary = require("../configs/cloudinary");
+const {
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  getApplicableNotificationFields,
+  isPlainObject,
+  serializeNotificationPreferences,
+  validateNotificationPreferencePatch,
+} = require("../utils/notificationPreferences");
 
 const uploadBuffer = (buffer, options) =>
   new Promise((resolve, reject) => {
@@ -102,8 +109,15 @@ exports.normalizeSearchHistoryEntry = normalizeSearchHistoryEntry;
 exports.pruneExpiredSearchHistory = pruneExpiredSearchHistory;
 exports.limitSearchHistory = limitSearchHistory;
 
-const toSafeUser = (user) => {
+const toProfileUser = (user) => {
   const result = user.toObject();
+  delete result.notificationPreferences;
+  delete result.notificationPreferencesVersion;
+  return result;
+};
+
+const toSafeUser = (user) => {
+  const result = toProfileUser(user);
   result.id = String(result._id);
   result.username = result.email;
   delete result._id;
@@ -144,7 +158,7 @@ exports.updateAvatar = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      user: user.toObject(),
+      user: toProfileUser(user),
     });
   } catch (error) {
     console.error("Avatar upload error:", error.message);
@@ -168,7 +182,7 @@ exports.removeAvatar = async (req, res) => {
     return res.status(200).json({
       success: true,
       message: "Profile photo removed",
-      user: user.toObject(),
+      user: toProfileUser(user),
     });
   } catch (error) {
     console.error("Avatar removal error:", error.message);
@@ -426,6 +440,155 @@ exports.clearSearchHistory = async (req, res) => {
   } catch (error) {
     console.error("Error clearing search history:", error.message);
     return res.status(500).json({ message: "Unable to clear search history" });
+  }
+};
+
+exports.getNotificationPreferences = async (req, res) => {
+  try {
+    const user = await Users.findById(req.user.userId).select(
+      "role notificationPreferences notificationPreferencesVersion",
+    );
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      configured: Number(user.notificationPreferencesVersion ?? 0) >= 1,
+      preferences: serializeNotificationPreferences(
+        user.notificationPreferences,
+        user.role,
+      ),
+    });
+  } catch (error) {
+    console.error("Error fetching notification preferences:", error.message);
+    return res
+      .status(500)
+      .json({ message: "Unable to load notification preferences" });
+  }
+};
+
+exports.updateNotificationPreferences = async (req, res) => {
+  const body = req.body;
+  if (!isPlainObject(body)) {
+    return res.status(400).json({ message: "Request body must be an object." });
+  }
+  if (
+    Object.keys(body).some(
+      (field) => !["preferences", "initialize"].includes(field),
+    ) ||
+    (body.initialize !== undefined && typeof body.initialize !== "boolean")
+  ) {
+    return res.status(400).json({ message: "Invalid notification preference request." });
+  }
+
+  try {
+    const userId = req.user.userId;
+    const user = await Users.findById(userId).select(
+      "role notificationPreferences notificationPreferencesVersion",
+    );
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const validation = validateNotificationPreferencePatch(
+      body.preferences,
+      user.role,
+    );
+    if (!validation.valid) {
+      return res
+        .status(validation.status)
+        .json({ message: validation.message });
+    }
+
+    const isConfigured =
+      Number(user.notificationPreferencesVersion ?? 0) >= 1;
+    if (isConfigured && body.initialize === true) {
+      return res.status(200).json({
+        success: true,
+        configured: true,
+        preferences: serializeNotificationPreferences(
+          user.notificationPreferences,
+          user.role,
+        ),
+      });
+    }
+
+    const fields = getApplicableNotificationFields(user.role);
+    const values = isConfigured
+      ? body.preferences
+      : {
+          ...DEFAULT_NOTIFICATION_PREFERENCES,
+          ...body.preferences,
+        };
+    const updates = {};
+    for (const field of isConfigured ? Object.keys(body.preferences) : fields) {
+      updates[`notificationPreferences.${field}`] = values[field];
+    }
+
+    let updatedUser;
+    if (!isConfigured) {
+      updates.notificationPreferencesVersion = 1;
+      const initialization = await Users.updateOne(
+        {
+          _id: userId,
+          $or: [
+            { notificationPreferencesVersion: 0 },
+            { notificationPreferencesVersion: { $exists: false } },
+          ],
+        },
+        { $set: updates },
+        { runValidators: true },
+      );
+
+      if (initialization.modifiedCount > 0) {
+        updatedUser = await Users.findById(userId).select(
+          "role notificationPreferences notificationPreferencesVersion",
+        );
+      } else {
+        updatedUser = await Users.findById(userId).select(
+          "role notificationPreferences notificationPreferencesVersion",
+        );
+        if (!updatedUser) {
+          return res.status(404).json({ message: "User not found" });
+        }
+        if (body.initialize !== true) {
+          const concurrentUpdates = {};
+          for (const [field, value] of Object.entries(body.preferences)) {
+            concurrentUpdates[`notificationPreferences.${field}`] = value;
+          }
+          updatedUser = await Users.findByIdAndUpdate(
+            userId,
+            { $set: concurrentUpdates },
+            { new: true, runValidators: true },
+          ).select("role notificationPreferences notificationPreferencesVersion");
+        }
+      }
+    } else {
+      updatedUser = await Users.findByIdAndUpdate(
+        userId,
+        { $set: updates },
+        { new: true, runValidators: true },
+      ).select("role notificationPreferences notificationPreferencesVersion");
+    }
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      configured: true,
+      preferences: serializeNotificationPreferences(
+        updatedUser.notificationPreferences,
+        updatedUser.role,
+      ),
+    });
+  } catch (error) {
+    console.error("Error saving notification preferences:", error.message);
+    return res
+      .status(500)
+      .json({ message: "Unable to save notification preferences" });
   }
 };
 

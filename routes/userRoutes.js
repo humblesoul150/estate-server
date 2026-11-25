@@ -12,6 +12,8 @@ const {
   getSearchHistory,
   addSearchHistory,
   clearSearchHistory,
+  getNotificationPreferences,
+  updateNotificationPreferences,
 } = require("../controllers/userController");
 const authMiddleware = require("../middleware/authMiddleware");
 const upload = require("../middleware/uploadMiddleware");
@@ -23,6 +25,16 @@ router.patch("/me/saved/:propertyId", authMiddleware, toggleSavedProperty);
 router.get("/me/search-history", authMiddleware, getSearchHistory);
 router.post("/me/search-history", authMiddleware, addSearchHistory);
 router.delete("/me/search-history", authMiddleware, clearSearchHistory);
+router.get(
+  "/me/notification-preferences",
+  authMiddleware,
+  getNotificationPreferences,
+);
+router.patch(
+  "/me/notification-preferences",
+  authMiddleware,
+  updateNotificationPreferences,
+);
 router.get("/:userId/public", getPublicProfile);
 router.patch(
   "/me/avatar",
