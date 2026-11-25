@@ -441,6 +441,11 @@ exports.toggleSavedProperty = async (req, res) => {
     if (!property) {
       return res.status(404).json({ message: "Property not found" });
     }
+    if (String(property.ownerId) === String(req.user.userId)) {
+      return res
+        .status(403)
+        .json({ message: "You cannot save your own property" });
+    }
 
     const user = await Users.findById(req.user.userId);
     if (!user) {
@@ -473,9 +478,9 @@ exports.getPublicProfile = async (req, res) => {
     }
 
     const user = await Users.findById(req.params.userId).select(
-      "firstName lastName email phoneNumber role avatar bio publicContact createdAt",
+      "firstName lastName email phoneNumber role avatar bio publicContact createdAt averageRating totalReviews ratingCount lastReviewedAt",
     );
-    if (!user || !["landlord", "propertyManager"].includes(user.role)) {
+    if (!user || !["admin", "landlord", "propertyManager"].includes(user.role)) {
       return res.status(404).json({ message: "Lister profile not found" });
     }
 

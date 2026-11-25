@@ -65,6 +65,11 @@ const dealSchema = new mongoose.Schema(
       default: "draft",
       index: true,
     },
+    featured: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
     startsAt: {
       type: Date,
       default: Date.now,

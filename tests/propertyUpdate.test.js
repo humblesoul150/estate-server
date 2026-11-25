@@ -20,6 +20,7 @@ const response = () => ({
 
 test("marketplace update persists full profile fields and clears a nullable service fee", async () => {
   const originals = {
+    findOwnedProperty: Property.findOne,
     findPropertyById: Property.findById,
     findListing: Listing.findOne,
     updateListing: Listing.findOneAndUpdate,
@@ -44,13 +45,14 @@ test("marketplace update persists full profile fields and clears a nullable serv
       };
     },
   };
-  let propertyLookupCount = 0;
+  let propertyLookupFilter;
   let listingUpdate;
+  Property.findOne = (filter) => {
+    propertyLookupFilter = filter;
+    return Promise.resolve(property);
+  };
   Property.findById = () => {
-    propertyLookupCount += 1;
-    return propertyLookupCount === 1
-      ? Promise.resolve(property)
-      : { populate: async () => property };
+    return { populate: async () => property };
   };
   Listing.findOne = async () => ({ _id: listingId });
   Listing.findOneAndUpdate = async (_filter, update) => {
@@ -63,6 +65,7 @@ test("marketplace update persists full profile fields and clears a nullable serv
     await updateMarketplaceProperty(
       {
         params: { propertyId: propertyId.toString() },
+        user: { userId: "owner-user-id" },
         files: [],
         body: {
           payload: JSON.stringify({
@@ -109,6 +112,10 @@ test("marketplace update persists full profile fields and clears a nullable serv
     );
 
     assert.equal(res.statusCode, 200);
+    assert.deepEqual(propertyLookupFilter, {
+      _id: propertyId.toString(),
+      ownerId: "owner-user-id",
+    });
     assert.equal(property.name, "Updated name");
     assert.equal(property.address, "New address");
     assert.equal(property.location.lng, 32.6);
@@ -120,8 +127,40 @@ test("marketplace update persists full profile fields and clears a nullable serv
     assert.equal(property.serviceFee, null);
     assert.equal(listingUpdate.$set.serviceFee, null);
   } finally {
+    Property.findOne = originals.findOwnedProperty;
     Property.findById = originals.findPropertyById;
     Listing.findOne = originals.findListing;
     Listing.findOneAndUpdate = originals.updateListing;
+  }
+});
+
+test("marketplace update rejects a property owned by another user", async () => {
+  const originalFindOne = Property.findOne;
+  const propertyId = new mongoose.Types.ObjectId().toString();
+  let lookupFilter;
+  Property.findOne = async (filter) => {
+    lookupFilter = filter;
+    return null;
+  };
+
+  try {
+    const res = response();
+    await updateMarketplaceProperty(
+      {
+        params: { propertyId },
+        user: { userId: "requesting-user-id" },
+        files: [],
+        body: { payload: JSON.stringify({ name: "Attempted change" }) },
+      },
+      res,
+    );
+
+    assert.equal(res.statusCode, 404);
+    assert.deepEqual(lookupFilter, {
+      _id: propertyId,
+      ownerId: "requesting-user-id",
+    });
+  } finally {
+    Property.findOne = originalFindOne;
   }
 });

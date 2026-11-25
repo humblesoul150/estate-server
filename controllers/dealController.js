@@ -60,6 +60,14 @@ function isDealActive(deal, currentDate = new Date()) {
   return normalizedStatus === "active";
 }
 
+async function findOwnedDeal(dealId, userId) {
+  const propertyIds = await Property.distinct("_id", { ownerId: userId });
+  return Deal.findOne({
+    _id: dealId,
+    propertyId: { $in: propertyIds },
+  });
+}
+
 function serializeDeal(deal) {
   const property = deal.propertyId && typeof deal.propertyId.toJSON === "function"
     ? deal.propertyId.toJSON()
@@ -77,6 +85,7 @@ function serializeDeal(deal) {
     discount: deal.discount,
     pricingSnapshot: deal.pricingSnapshot,
     status: deal.status,
+    featured: deal.featured === true,
     startsAt: deal.startsAt,
     endsAt: deal.endsAt,
     createdBy: deal.createdBy ? String(deal.createdBy) : null,
@@ -99,10 +108,19 @@ async function validateDealTarget(propertyId, listingId, reqUser) {
   if (!mongoose.isValidObjectId(listingId)) {
     throw new Error("A valid listingId is required.");
   }
+  if (!reqUser || !reqUser.userId) {
+    throw new Error("Authentication is required.");
+  }
 
-  const property = await Property.findById(propertyId).lean();
+  const property = await Property.findOne({
+    _id: propertyId,
+    ownerId: reqUser.userId,
+  }).lean();
   if (!property) {
     throw new Error("Property not found.");
+  }
+  if (property.isArchived === true) {
+    throw new Error("Archived properties cannot have new deals.");
   }
 
   const listing = await Listing.findOne({ _id: listingId, propertyId }).lean();
@@ -116,10 +134,6 @@ async function validateDealTarget(propertyId, listingId, reqUser) {
   if (listing.status !== "published") {
     throw new Error("Deals can only be attached to published listings.");
   }
-  if (!reqUser || !reqUser.userId) {
-    throw new Error("Authentication is required.");
-  }
-
   return { property, listing };
 }
 
@@ -171,11 +185,25 @@ function ensureNoActiveOverlap(listingId, startsAt, endsAt, ignoreDealId = null)
 async function getPublicDeals(_req, res) {
   try {
     const deals = await Deal.find({ status: "published" })
-      .populate("propertyId")
-      .populate("listingId")
+      .populate({
+        path: "propertyId",
+        match: {
+          moderationStatus: "approved",
+          isArchived: { $ne: true },
+        },
+      })
+      .populate({
+        path: "listingId",
+        match: { status: "published" },
+      })
       .sort({ createdAt: -1 });
 
-    const activeDeals = deals.filter((deal) => isDealActive(deal, new Date()));
+    const activeDeals = deals.filter(
+      (deal) =>
+        deal.propertyId &&
+        deal.listingId &&
+        isDealActive(deal, new Date()),
+    );
 
     return res.status(200).json({
       deals: activeDeals.map((deal) => serializeDeal(deal)),
@@ -185,9 +213,110 @@ async function getPublicDeals(_req, res) {
   }
 }
 
-async function getDealsForManagement(_req, res) {
+async function getDealsForFeaturedCuration(req, res) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ message: "Platform administrator access required." });
+  }
+
   try {
-    const deals = await Deal.find({})
+    const deals = await Deal.find({ status: "published" })
+      .populate({
+        path: "propertyId",
+        match: {
+          moderationStatus: "approved",
+          isArchived: { $ne: true },
+        },
+      })
+      .populate({
+        path: "listingId",
+        match: { status: "published" },
+      })
+      .sort({ startsAt: 1, endsAt: 1, createdAt: -1 });
+    const now = new Date();
+    const eligibleDeals = deals.filter((deal) => {
+      if (!deal.propertyId || !deal.listingId) return false;
+      if (!deal.endsAt) return true;
+      const endDate = new Date(deal.endsAt);
+      return !Number.isNaN(endDate.getTime()) && endDate >= now;
+    });
+
+    return res.status(200).json({
+      deals: eligibleDeals.map((deal) => serializeDeal(deal)),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || "Unable to load deals for featured curation.",
+    });
+  }
+}
+
+async function updateDealFeaturedStatus(req, res) {
+  if (req.user?.role !== "admin") {
+    return res.status(403).json({ message: "Platform administrator access required." });
+  }
+
+  if (!mongoose.isValidObjectId(req.params.dealId)) {
+    return res.status(400).json({ message: "A valid deal id is required." });
+  }
+  if (typeof req.body?.featured !== "boolean") {
+    return res.status(400).json({ message: "Featured must be a boolean value." });
+  }
+
+  try {
+    const deal = await Deal.findById(req.params.dealId)
+      .populate({
+        path: "propertyId",
+        match: {
+          moderationStatus: "approved",
+          isArchived: { $ne: true },
+        },
+      })
+      .populate({
+        path: "listingId",
+        match: { status: "published" },
+      });
+
+    if (!deal) {
+      return res.status(404).json({ message: "Deal not found." });
+    }
+
+    if (req.body.featured) {
+      const endDate = deal.endsAt ? new Date(deal.endsAt) : null;
+      const isUnexpired =
+        !endDate ||
+        (!Number.isNaN(endDate.getTime()) && endDate >= new Date());
+      if (
+        deal.status !== "published" ||
+        !deal.propertyId ||
+        !deal.listingId ||
+        !isUnexpired
+      ) {
+        return res.status(409).json({
+          message: "Only eligible published deals can be featured.",
+        });
+      }
+    }
+
+    deal.featured = req.body.featured;
+    await deal.save();
+
+    return res.status(200).json({
+      success: true,
+      deal: serializeDeal(deal),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: error.message || "Unable to update featured deal status.",
+    });
+  }
+}
+
+async function getDealsForManagement(req, res) {
+  try {
+    const propertyIds = await Property.distinct("_id", {
+      ownerId: req.user.userId,
+    });
+    const deals = await Deal.find({ propertyId: { $in: propertyIds } })
       .populate("propertyId")
       .populate("listingId")
       .sort({ createdAt: -1 });
@@ -268,7 +397,7 @@ async function createDeal(req, res) {
 
 async function updateDeal(req, res) {
   try {
-    const deal = await Deal.findById(req.params.dealId);
+    const deal = await findOwnedDeal(req.params.dealId, req.user.userId);
     if (!deal) {
       return res.status(404).json({ message: "Deal not found." });
     }
@@ -316,7 +445,7 @@ async function updateDealStatus(req, res) {
       return res.status(400).json({ message: "Invalid deal status." });
     }
 
-    const deal = await Deal.findById(req.params.dealId);
+    const deal = await findOwnedDeal(req.params.dealId, req.user.userId);
     if (!deal) {
       return res.status(404).json({ message: "Deal not found." });
     }
@@ -351,7 +480,7 @@ async function updateDealStatus(req, res) {
 
 async function removeDeal(req, res) {
   try {
-    const deal = await Deal.findById(req.params.dealId);
+    const deal = await findOwnedDeal(req.params.dealId, req.user.userId);
     if (!deal) {
       return res.status(404).json({ message: "Deal not found." });
     }
@@ -377,6 +506,8 @@ module.exports = {
   normalizeDealStatus,
   isDealActive,
   getPublicDeals,
+  getDealsForFeaturedCuration,
+  updateDealFeaturedStatus,
   getDealsForManagement,
   createDeal,
   updateDeal,

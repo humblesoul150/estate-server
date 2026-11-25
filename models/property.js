@@ -43,6 +43,8 @@ const propertySchema = new mongoose.Schema(
       index: true,
     },
     moderationReason: { type: String, trim: true },
+    isArchived: { type: Boolean, default: false, index: true },
+    archivedAt: { type: Date, default: null },
     units: [
       {
         unitNumber: String,

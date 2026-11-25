@@ -158,7 +158,10 @@ const createMarketplaceProperty = async (req, res) => {
 
 const getMarketplaceProperties = async (_req, res) => {
   try {
-    const properties = await Property.find({ moderationStatus: "approved" })
+    const properties = await Property.find({
+      moderationStatus: "approved",
+      isArchived: { $ne: true },
+    })
       .populate({ path: "listings", match: { status: "published" } })
       .sort({ createdAt: -1 });
     return res.status(200).json({
@@ -174,9 +177,11 @@ const getMarketplaceProperties = async (_req, res) => {
   }
 };
 
-const getMarketplacePropertiesForReview = async (_req, res) => {
+const getMarketplacePropertiesForReview = async (req, res) => {
   try {
-    const properties = await Property.find({})
+    const filter =
+      req.user?.role === "admin" ? {} : { ownerId: req.user.userId };
+    const properties = await Property.find(filter)
       .populate("listings")
       .sort({ createdAt: -1 });
     return res.status(200).json({
@@ -196,7 +201,11 @@ const moderateMarketplaceProperty = async (req, res) => {
     if (!["pending", "approved", "rejected"].includes(status)) {
       return res.status(400).json({ message: "Invalid moderation status." });
     }
-    const property = await Property.findById(req.params.propertyId);
+    const propertyFilter =
+      req.user?.role === "admin"
+        ? { _id: req.params.propertyId }
+        : { _id: req.params.propertyId, ownerId: req.user.userId };
+    const property = await Property.findOne(propertyFilter);
     if (!property) {
       return res.status(404).json({ message: "Property not found." });
     }
@@ -230,9 +239,58 @@ const moderateMarketplaceProperty = async (req, res) => {
   }
 };
 
+const setMarketplacePropertyArchived = async (req, res, isArchived) => {
+  const { propertyId } = req.params;
+  if (!mongoose.isValidObjectId(propertyId)) {
+    return res.status(400).json({ message: "A valid property id is required." });
+  }
+
+  try {
+    const property = await Property.findOneAndUpdate(
+      { _id: propertyId, ownerId: req.user.userId },
+      {
+        $set: {
+          isArchived,
+          archivedAt: isArchived ? new Date() : null,
+        },
+      },
+      { new: true, runValidators: true },
+    );
+    if (!property) {
+      return res.status(404).json({ message: "Property not found." });
+    }
+
+    return res.status(200).json({
+      success: true,
+      property: serializeMarketplaceProperty(property),
+    });
+  } catch (error) {
+    logger.error(
+      isArchived
+        ? "Marketplace property archive failed"
+        : "Marketplace property restore failed",
+      { message: error.message, propertyId, userId: req.user?.userId },
+    );
+    return res.status(500).json({
+      message: isArchived
+        ? "Unable to archive this property."
+        : "Unable to restore this property.",
+    });
+  }
+};
+
+const archiveMarketplaceProperty = (req, res) =>
+  setMarketplacePropertyArchived(req, res, true);
+
+const unarchiveMarketplaceProperty = (req, res) =>
+  setMarketplacePropertyArchived(req, res, false);
+
 const updateMarketplaceProperty = async (req, res) => {
   try {
-    const property = await Property.findById(req.params.propertyId);
+    const property = await Property.findOne({
+      _id: req.params.propertyId,
+      ownerId: req.user.userId,
+    });
     if (!property) {
       return res.status(404).json({ message: "Property not found." });
     }
@@ -444,7 +502,10 @@ const deleteMarketplaceProperty = async (req, res) => {
       return res.status(403).json({ message: "Current password is incorrect." });
     }
 
-    const property = await Property.findById(propertyId);
+    const property = await Property.findOne({
+      _id: propertyId,
+      ownerId: req.user.userId,
+    });
     if (!property) {
       return res.status(404).json({ message: "Property not found." });
     }
@@ -518,6 +579,8 @@ module.exports = {
   getMarketplaceProperties,
   getMarketplacePropertiesForReview,
   moderateMarketplaceProperty,
+  archiveMarketplaceProperty,
+  unarchiveMarketplaceProperty,
   updateMarketplaceProperty,
   deleteMarketplaceProperty,
 };

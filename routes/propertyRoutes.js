@@ -5,6 +5,8 @@ const {
   getMarketplaceProperties,
   getMarketplacePropertiesForReview,
   moderateMarketplaceProperty,
+  archiveMarketplaceProperty,
+  unarchiveMarketplaceProperty,
   updateMarketplaceProperty,
   deleteMarketplaceProperty,
 } = require("../controllers/propertyController");
@@ -60,6 +62,18 @@ router.patch(
   authMiddleware,
   requireAdmin,
   moderateMarketplaceProperty,
+);
+router.patch(
+  "/marketplace/:propertyId/archive",
+  authMiddleware,
+  requireAdmin,
+  archiveMarketplaceProperty,
+);
+router.patch(
+  "/marketplace/:propertyId/unarchive",
+  authMiddleware,
+  requireAdmin,
+  unarchiveMarketplaceProperty,
 );
 router.get("/all", propertyFeedLimiter, getMarketplaceProperties);
 
